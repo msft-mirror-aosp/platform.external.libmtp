@@ -44,6 +44,7 @@
 #include "util.h"
 
 #include "mtpz.h"
+int use_mtpz;
 
 #include <stdarg.h>
 #include <stdlib.h>
@@ -1876,8 +1877,8 @@ LIBMTP_mtpdevice_t *LIBMTP_Open_Raw_Device_Uncached(LIBMTP_raw_device_t *rawdevi
   current_params->error_func = LIBMTP_ptp_error;
   /* TODO: Will this always be little endian? */
   current_params->byteorder = PTP_DL_LE;
-  current_params->cd_locale_to_ucs2 = iconv_open("UCS-2LE", "UTF-8");
-  current_params->cd_ucs2_to_locale = iconv_open("UTF-8", "UCS-2LE");
+  current_params->cd_locale_to_ucs2 = iconv_open("UTF-16LE", "UTF-8");
+  current_params->cd_ucs2_to_locale = iconv_open("UTF-8", "UTF-16LE");
 
   if(current_params->cd_locale_to_ucs2 == (iconv_t) -1 ||
      current_params->cd_ucs2_to_locale == (iconv_t) -1) {
@@ -2221,6 +2222,8 @@ void LIBMTP_Handle_Event(PTPContainer *ptp_event,
     case PTP_EC_DevicePropChanged:
       LIBMTP_INFO("Received event PTP_EC_DevicePropChanged in session %u\n", session_id);
       /* TODO: update device properties */
+      *event = LIBMTP_EVENT_DEVICE_PROPERTY_CHANGED;
+      *out1 = param1;
       break;
     case PTP_EC_ObjectInfoChanged:
       LIBMTP_INFO("Received event PTP_EC_ObjectInfoChanged in session %u\n", session_id);
@@ -3197,7 +3200,7 @@ void LIBMTP_Dump_Device_Info(LIBMTP_mtpdevice_t *device)
     printf("   None.\n");
   } else {
     for (i=0;i<params->deviceinfo.EventsSupported_len;i++) {
-      printf("   0x%04x (%s)\n", params->deviceinfo.EventsSupported[i], ptp_strerror(params->deviceinfo.EventsSupported[i], params->deviceinfo.VendorExtensionID));
+      printf("   0x%04x: %s\n", params->deviceinfo.EventsSupported[i], ptp_get_event_code_name(params, params->deviceinfo.EventsSupported[i]));
     }
   }
   printf("Device Properties Supported:\n");
@@ -4059,6 +4062,12 @@ int LIBMTP_Check_Capability(LIBMTP_mtpdevice_t *device, LIBMTP_devicecap_t cap)
 				      PTP_OC_ANDROID_BeginEditObject) &&
 	    ptp_operation_issupported(device->params,
 				      PTP_OC_ANDROID_EndEditObject));
+  case LIBMTP_DEVICECAP_MoveObject:
+    return ptp_operation_issupported(device->params,
+				     PTP_OC_MoveObject);
+  case LIBMTP_DEVICECAP_CopyObject:
+    return ptp_operation_issupported(device->params,
+				     PTP_OC_CopyObject);
   /*
    * Handle other capabilities here, this is also a good place to
    * blacklist some advanced operations on specific devices if need
@@ -4254,6 +4263,10 @@ static LIBMTP_file_t *obj2file(LIBMTP_mtpdevice_t *device, PTPObject *ob)
   file->parent_id = ob->oi.ParentObject;
   file->storage_id = ob->oi.StorageID;
 
+  if (ob->oi.Filename != NULL) {
+    file->filename = strdup(ob->oi.Filename);
+  }
+
   // Set the filetype
   file->filetype = map_ptp_type_to_libmtp_type(ob->oi.ObjectFormat);
 
@@ -4267,7 +4280,7 @@ static LIBMTP_file_t *obj2file(LIBMTP_mtpdevice_t *device, PTPObject *ob)
    */
   if (file->filetype == LIBMTP_FILETYPE_UNKNOWN) {
     if ((FLAG_IRIVER_OGG_ALZHEIMER(ptp_usb) ||
-	 FLAG_OGG_IS_UNKNOWN(ptp_usb)) &&
+        FLAG_OGG_IS_UNKNOWN(ptp_usb)) &&
         has_ogg_extension(file->filename)) {
       file->filetype = LIBMTP_FILETYPE_OGG;
     }
@@ -4282,9 +4295,6 @@ static LIBMTP_file_t *obj2file(LIBMTP_mtpdevice_t *device, PTPObject *ob)
 
   // We only have 32-bit file size here; later we use the PTP_OPC_ObjectSize property
   file->filesize = ob->oi.ObjectCompressedSize;
-  if (ob->oi.Filename != NULL) {
-    file->filename = strdup(ob->oi.Filename);
-  }
 
   // This is a unique ID so we can keep track of the file.
   file->item_id = ob->oid;
@@ -4500,7 +4510,6 @@ LIBMTP_file_t * LIBMTP_Get_Files_And_Folders(LIBMTP_mtpdevice_t *device,
 			     uint32_t const parent)
 {
   PTPParams *params = (PTPParams *) device->params;
-  PTP_USB *ptp_usb = (PTP_USB*) device->usbinfo;
   LIBMTP_file_t *retfiles = NULL;
   LIBMTP_file_t *curfile = NULL;
   PTPObjectHandles currentHandles;
@@ -4512,17 +4521,6 @@ LIBMTP_file_t * LIBMTP_Get_Files_And_Folders(LIBMTP_mtpdevice_t *device,
     // This function is only supposed to be used by devices
     // opened as uncached!
     LIBMTP_ERROR("tried to use %s on a cached device!\n",
-		 __func__);
-    return NULL;
-  }
-
-  if (FLAG_BROKEN_GET_OBJECT_PROPVAL(ptp_usb)) {
-    // These devices cannot handle the commands needed for
-    // Uncached access!
-    LIBMTP_ERROR("tried to use %s on an unsupported device, "
-		 "this command does not work on all devices "
-		 "due to missing low-level support to read "
-		 "information on individual tracks\n",
 		 __func__);
     return NULL;
   }
@@ -5270,25 +5268,27 @@ int LIBMTP_Get_File_To_File_Descriptor(LIBMTP_mtpdevice_t *device,
   uint16_t ret;
   PTPParams *params = (PTPParams *) device->params;
   PTP_USB *ptp_usb = (PTP_USB*) device->usbinfo;
-  PTPObject *ob;
 
-  ret = ptp_object_want (params, id, PTPOBJECT_OBJECTINFO_LOADED, &ob);
-  if (ret != PTP_RC_OK) {
+  LIBMTP_file_t *mtpfile = LIBMTP_Get_Filemetadata(device, id);
+  if (mtpfile == NULL) {
     add_error_to_errorstack(device, LIBMTP_ERROR_GENERAL, "LIBMTP_Get_File_To_File_Descriptor(): Could not get object info.");
     return -1;
   }
-  if (ob->oi.ObjectFormat == PTP_OFC_Association) {
+  if (mtpfile->filetype == LIBMTP_FILETYPE_FOLDER) {
     add_error_to_errorstack(device, LIBMTP_ERROR_GENERAL, "LIBMTP_Get_File_To_File_Descriptor(): Bad object format.");
     return -1;
   }
 
   // Callbacks
   ptp_usb->callback_active = 1;
-  ptp_usb->current_transfer_total = ob->oi.ObjectCompressedSize+
+  ptp_usb->current_transfer_total = mtpfile->filesize +
     PTP_USB_BULK_HDR_LEN+sizeof(uint32_t); // Request length, one parameter
   ptp_usb->current_transfer_complete = 0;
   ptp_usb->current_transfer_callback = callback;
   ptp_usb->current_transfer_callback_data = data;
+
+  // Don't need mtpfile anymore
+  LIBMTP_destroy_file_t(mtpfile);
 
   ret = ptp_getobject_tofd(params, id, fd);
 
@@ -5332,28 +5332,30 @@ int LIBMTP_Get_File_To_Handler(LIBMTP_mtpdevice_t *device,
 					LIBMTP_progressfunc_t const callback,
 					void const * const data)
 {
-  PTPObject *ob;
   uint16_t ret;
   PTPParams *params = (PTPParams *) device->params;
   PTP_USB *ptp_usb = (PTP_USB*) device->usbinfo;
 
-  ret = ptp_object_want (params, id, PTPOBJECT_OBJECTINFO_LOADED, &ob);
-  if (ret != PTP_RC_OK) {
+  LIBMTP_file_t *mtpfile = LIBMTP_Get_Filemetadata(device, id);
+  if (mtpfile == NULL) {
     add_error_to_errorstack(device, LIBMTP_ERROR_GENERAL, "LIBMTP_Get_File_To_File_Descriptor(): Could not get object info.");
     return -1;
   }
-  if (ob->oi.ObjectFormat == PTP_OFC_Association) {
+  if (mtpfile->filetype == LIBMTP_FILETYPE_FOLDER) {
     add_error_to_errorstack(device, LIBMTP_ERROR_GENERAL, "LIBMTP_Get_File_To_File_Descriptor(): Bad object format.");
     return -1;
   }
 
   // Callbacks
   ptp_usb->callback_active = 1;
-  ptp_usb->current_transfer_total = ob->oi.ObjectCompressedSize+
+  ptp_usb->current_transfer_total = mtpfile->filesize +
     PTP_USB_BULK_HDR_LEN+sizeof(uint32_t); // Request length, one parameter
   ptp_usb->current_transfer_complete = 0;
   ptp_usb->current_transfer_callback = callback;
   ptp_usb->current_transfer_callback_data = data;
+
+  // Don't need mtpfile anymore
+  LIBMTP_destroy_file_t(mtpfile);
 
   MTPDataHandler mtp_handler;
   mtp_handler.getfunc = NULL;
@@ -6800,6 +6802,79 @@ int LIBMTP_Delete_Object(LIBMTP_mtpdevice_t *device,
   ret = ptp_deleteobject(params, object_id, 0);
   if (ret != PTP_RC_OK) {
     add_ptp_error_to_errorstack(device, ret, "LIBMTP_Delete_Object(): could not delete object.");
+    return -1;
+  }
+
+  return 0;
+}
+
+/**
+ * The function moves an object from one location on a device to another
+ * location.
+ *
+ * The semantics of moving a folder are not defined in the spec, but it
+ * appears to do the right thing when tested (but devices that implement
+ * this operation are rare).
+ *
+ * Note that moving an object may take a significant amount of time,
+ * particularly if being moved between storages. MTP does not provide
+ * any kind of progress mechanism, so the operation will simply block
+ * for the duration.
+ *
+ * @param device a pointer to the device where the object exists.
+ * @param object_id the object to move.
+ * @param storage_id the id of the destination storage.
+ * @param parent_id the id of the destination parent object (folder).
+ *	  If the destination is the root of the storage, pass '0'.
+ * @return 0 on success, any other value means failure.
+ */
+int LIBMTP_Move_Object(LIBMTP_mtpdevice_t *device,
+		       uint32_t object_id,
+		       uint32_t storage_id,
+		       uint32_t parent_id)
+{
+  uint16_t ret;
+  PTPParams *params = (PTPParams *) device->params;
+
+  ret = ptp_moveobject(params, object_id, storage_id, parent_id);
+  if (ret != PTP_RC_OK) {
+    add_ptp_error_to_errorstack(device, ret, "LIBMTP_Move_Object(): could not move object.");
+    return -1;
+  }
+
+  return 0;
+}
+
+/**
+ * The function copies an object from one location on a device to another
+ * location.
+ *
+ * The semantics of copying a folder are not defined in the spec, but it
+ * appears to do the right thing when tested (but devices that implement
+ * this operation are rare).
+ *
+ * Note that copying an object may take a significant amount of time.
+ * MTP does not provide any kind of progress mechanism, so the operation
+ * will simply block for the duration.
+ *
+ * @param device a pointer to the device where the object exists.
+ * @param object_id the object to copy.
+ * @param storage_id the id of the destination storage.
+ * @param parent_id the id of the destination parent object (folder).
+ *	  If the destination is the root of the storage, pass '0'.
+ * @return 0 on success, any other value means failure.
+ */
+int LIBMTP_Copy_Object(LIBMTP_mtpdevice_t *device,
+		       uint32_t object_id,
+		       uint32_t storage_id,
+		       uint32_t parent_id)
+{
+  uint16_t ret;
+  PTPParams *params = (PTPParams *) device->params;
+
+  ret = ptp_copyobject(params, object_id, storage_id, parent_id);
+  if (ret != PTP_RC_OK) {
+    add_ptp_error_to_errorstack(device, ret, "LIBMTP_Copy_Object(): could not copy object.");
     return -1;
   }
 
@@ -9008,8 +9083,34 @@ int LIBMTP_GetPartialObject(LIBMTP_mtpdevice_t *device, uint32_t const id,
                             uint64_t offset, uint32_t maxbytes,
                             unsigned char **data, unsigned int *size)
 {
-  PTPParams *params = (PTPParams *) device->params;
-  uint16_t ret;
+  PTPParams	*params = (PTPParams *) device->params;
+  uint16_t	ret;
+  LIBMTP_file_t	*mtpfile = LIBMTP_Get_Filemetadata(device, id);
+
+  /* Some devices do not like reading over the end and hang instead of progressing */
+  if (offset >= mtpfile->filesize) {
+    *size = 0;
+    LIBMTP_destroy_file_t (mtpfile);
+    return 0;
+  }
+  if (offset + maxbytes > mtpfile->filesize) {
+    maxbytes = mtpfile->filesize - offset;
+  }
+  /* The MTP stack of Samsung Galaxy devices has a mysterious bug in
+   * GetPartialObject. When GetPartialObject is invoked to read the
+   * last bytes of a file and the amount of data to read is such that
+   * the last USB packet sent in the reply matches exactly the USB 2.0
+   * packet size, then the Samsung Galaxy device hangs, resulting in a
+   * timeout error.
+   * As a workaround, we read one less byte instead of reaching the
+   * end of the file, forcing the caller to perform an additional read
+   * to get the last byte (i.e. the final read that would fail is
+   * replaced with two partial reads that succeed).
+   */
+  if ((params->device_flags & DEVICE_FLAG_SAMSUNG_OFFSET_BUG) &&
+      (maxbytes % PTP_USB_BULK_HS_MAX_PACKET_LEN_READ) == (PTP_USB_BULK_HS_MAX_PACKET_LEN_READ - PTP_USB_BULK_HDR_LEN)) {
+    maxbytes--;
+  }
 
   if (!ptp_operation_issupported(params, PTP_OC_ANDROID_GetPartialObject64)) {
     if  (!ptp_operation_issupported(params, PTP_OC_GetPartialObject)) {
