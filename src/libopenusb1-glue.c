@@ -500,7 +500,7 @@ static LIBMTP_error_number_t get_mtp_usb_device_list(mtpdevice_list_t ** mtp_dev
 
         ret = openusb_parse_device_desc(libmtp_openusb_handle, dev, NULL, 0, &desc);
         if (ret != OPENUSB_SUCCESS) continue;
-        
+
         if (desc.bDeviceClass != USB_CLASS_HUB) {
             int i;
             int found = 0;
@@ -651,7 +651,7 @@ LIBMTP_error_number_t LIBMTP_Detect_Raw_Devices(LIBMTP_raw_device_t ** devices,
                 retdevs[i].device_entry.device_flags = mtp_device_table[j].device_flags;
 
                 // This device is known to the developers
-                LIBMTP_ERROR("Device %d (VID=%04x and PID=%04x) is a %s %s.\n",
+                LIBMTP_INFO("Device %d (VID=%04x and PID=%04x) is a %s %s.\n",
                         i,
                         desc.idVendor,
                         desc.idProduct,
@@ -1213,7 +1213,7 @@ ptp_usb_senddata(PTPParams* params, PTPContainer* ptp,
     unsigned long packet_size;
     PTP_USB *ptp_usb = (PTP_USB *) params->data;
 
-    packet_size = ptp_usb->inep_maxpacket;
+    packet_size = ptp_usb->outep_maxpacket;
 
     LIBMTP_USB_DEBUG("SEND DATA PHASE\n");
 
@@ -1239,7 +1239,7 @@ ptp_usb_senddata(PTPParams* params, PTPContainer* ptp,
         if (ret != PTP_RC_OK){
             return ret;
         }
-            
+
         if (gotlen != datawlen){
             return PTP_RC_GeneralError;
         }
@@ -1256,7 +1256,7 @@ ptp_usb_senddata(PTPParams* params, PTPContainer* ptp,
     bytes_left_to_transfer = size - datawlen;
     ret = PTP_RC_OK;
     while (bytes_left_to_transfer > 0) {
-	int max_long_transfer = ULONG_MAX + 1 - packet_size;
+	unsigned long max_long_transfer = ULONG_MAX + 1 - packet_size;
 	ret = ptp_write_func (bytes_left_to_transfer > max_long_transfer ? max_long_transfer : bytes_left_to_transfer,
 		handler, params->data, &written);
         if (ret != PTP_RC_OK){
