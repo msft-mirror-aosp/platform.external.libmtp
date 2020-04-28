@@ -427,16 +427,6 @@ typedef enum {
    * @see LIBMTP_TruncateObject()
    */
   LIBMTP_DEVICECAP_EditObjects,
-  /**
-   * This capability tells whether you can call the function to
-   * move an object, @see LIBMTP_MoveObject()
-   */
-  LIBMTP_DEVICECAP_MoveObject,
-  /**
-   * This capability tells whether you can call the function to
-   * copy an object, @see LIBMTP_CopyObject()
-   */
-  LIBMTP_DEVICECAP_CopyObject,
 } LIBMTP_devicecap_t;
 
 /**
@@ -811,7 +801,6 @@ enum LIBMTP_event_enum {
   LIBMTP_EVENT_STORE_REMOVED,
   LIBMTP_EVENT_OBJECT_ADDED,
   LIBMTP_EVENT_OBJECT_REMOVED,
-  LIBMTP_EVENT_DEVICE_PROPERTY_CHANGED,
 };
 typedef enum LIBMTP_event_enum LIBMTP_event_t;
 
@@ -1055,8 +1044,6 @@ int LIBMTP_Set_Album_Name(LIBMTP_mtpdevice_t *, LIBMTP_album_t *, const char *);
  * @{
  */
 int LIBMTP_Delete_Object(LIBMTP_mtpdevice_t *, uint32_t);
-int LIBMTP_Move_Object(LIBMTP_mtpdevice_t *, uint32_t, uint32_t, uint32_t);
-int LIBMTP_Copy_Object(LIBMTP_mtpdevice_t *, uint32_t, uint32_t, uint32_t);
 int LIBMTP_Set_Object_Filename(LIBMTP_mtpdevice_t *, uint32_t , char *);
 int LIBMTP_GetPartialObject(LIBMTP_mtpdevice_t *, uint32_t const,
                             uint64_t, uint32_t,
